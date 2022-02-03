@@ -1,5 +1,5 @@
 (*
-Chapter 10
+Chapter 11
 *)
 
 Require Import TLC.LibLN.
