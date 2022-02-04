@@ -1,5 +1,6 @@
 (*
 Chapter 8
+Typed Arithmetic Expressions
 *)
 
 Require Import TLC.LibLN.

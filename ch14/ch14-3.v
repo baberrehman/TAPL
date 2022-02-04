@@ -1,22 +1,22 @@
 (*
-Chapter 9
-Simply Typed Lambda-Calculus
+Chapter 14
+-> Simply Typed Lambda-Calculus
+-> Exceptions (Figure 14-3: Exceptions Carrying Values)
 *)
 
 Require Import TLC.LibLN.
 
 Inductive typ : Set :=
   | t_arrow : typ -> typ -> typ
-  | t_bool  : typ.
+  | t_nat : typ. (*nat type for error codes*)
 
 Inductive exp : Set :=
   | e_fvar : var -> exp
   | e_bvar : nat -> exp
   | e_abs : typ -> exp -> exp
   | e_app : exp -> exp -> exp
-  | e_tru : exp
-  | e_fls : exp
-  | e_cond : exp -> exp -> exp -> exp.
+  | e_raise : exp -> exp
+  | e_try : exp -> exp -> exp.
 
 Definition env := env typ.
 
@@ -26,9 +26,8 @@ Fixpoint subst_ee (x : var) (s t: exp) {struct t} : exp :=
   | e_bvar i => e_bvar i
   | e_abs T t1 => e_abs T (subst_ee x s t1)
   | e_app t1 t2 => e_app (subst_ee x s t1) (subst_ee x s t2)
-  | e_tru => e_tru
-  | e_fls => e_fls
-  | e_cond t t1 t2 => e_cond (subst_ee x s t) (subst_ee x s t1) (subst_ee x s t2)
+  | e_raise e => e_raise (subst_ee x s e)
+  | e_try e1 e2 => e_try (subst_ee x s e1) (subst_ee x s e2)
 end.
 
 Fixpoint open_ee_rec (j : nat) (s t: exp) {struct t} : exp :=
@@ -37,9 +36,8 @@ Fixpoint open_ee_rec (j : nat) (s t: exp) {struct t} : exp :=
   | e_bvar i => If (i = j) then s else e_bvar i
   | e_abs T t1 => e_abs T (open_ee_rec (S j) s t1)
   | e_app t1 t2 => e_app (open_ee_rec j s t1) (open_ee_rec j s t2)
-  | e_tru => e_tru
-  | e_fls => e_fls
-  | e_cond t t1 t2 => e_cond (open_ee_rec j s t) (open_ee_rec j s t1) (open_ee_rec j s t2)
+  | e_raise e => e_raise (open_ee_rec j s e)
+  | e_try e1 e2 => e_try (open_ee_rec j s e1) (open_ee_rec j s e2)
 end.
 
 Definition open_ee t u := open_ee_rec 0 u t.
@@ -58,21 +56,18 @@ Inductive lc_exp : exp -> Prop :=
      lc_exp e1 ->
      lc_exp e2 ->
      lc_exp (e_app e1 e2)
- | lc_tru : 
-      lc_exp e_tru
- | lc_fls : 
-      lc_exp e_fls
- | lc_cond : forall e e1 e2,
-      lc_exp e ->
+ | lc_raise : forall e,
+      lc_exp e -> 
+      lc_exp (e_raise e)
+ | lc_try : forall e1 e2,
       lc_exp e1 ->
       lc_exp e2 ->
-      lc_exp (e_cond e e1 e2).
+      lc_exp (e_try e1 e2).
 
 Inductive value : exp -> Prop :=
   | val_abs : forall T e,
-      value (e_abs T e)
-  | val_tru : value e_tru
-  | val_fls : value e_fls.
+      value (e_abs T e).
+(* error is not value. It will break progress *)
 
 Inductive typing : env -> exp -> typ -> Prop :=
   | typ_var : forall x E T,
@@ -88,17 +83,13 @@ Inductive typing : env -> exp -> typ -> Prop :=
       typing E e1 (t_arrow T1 T2) ->
       typing E e2 T1 ->
       typing E (e_app e1 e2) T2
-  | typ_tru : forall E,
-      ok E ->
-      typing E e_tru t_bool
-  | typ_fls : forall E,
-      ok E ->
-      typing E e_fls t_bool
-  | typ_cond : forall E e e1 e2 T,
-      typing E e t_bool ->
+  | typ_raise : forall E e T,
+      typing E e t_nat ->
+      typing E (e_raise e) T
+  | typ_try : forall E e1 e2 T,
       typing E e1 T ->
-      typing E e2 T ->
-      typing E (e_cond e e1 e2) T.
+      typing E e2 (t_arrow t_nat T) ->
+      typing E (e_try e1 e2) T.
 
 Inductive step : exp -> exp -> Prop :=
   | step_appl : forall e1 e2 e1',
@@ -113,28 +104,29 @@ Inductive step : exp -> exp -> Prop :=
      lc_exp (e_abs T e) ->
      value v ->
      step (e_app (e_abs T e) v) (open_ee e v)
- | step_cond : forall e e1 e2 e',
-     lc_exp e1 ->
-     lc_exp e2 ->
-     step e e' ->
-     step (e_cond e e1 e2) (e_cond e' e1 e2)
- | step_condl : forall e1 e2,
-     lc_exp e1 ->
-     lc_exp e2 ->
-     step (e_cond e_tru e1 e2) e1
- | step_condr : forall e1 e2,
-     lc_exp e1 ->
-     lc_exp e2 ->
-     step (e_cond e_fls e1 e2) e2.
-
-Lemma cannonical_form_bool : forall v,
-  value v ->
-  forall E, typing E v t_bool ->
-  v = e_tru \/ v = e_fls.
-Proof.
-  introv Val Typ.
-  inverts Typ; try solve [inverts* Val].
-Qed.
+  | step_appraisel : forall v e2,
+      lc_exp e2 ->
+      value v ->
+      step (e_app (e_raise v) e2) (e_raise v)
+  | step_appraiser : forall e1 e2,
+      value e1 ->
+      value e2 ->
+      step (e_app e1 (e_raise e2)) (e_raise e2)
+  | step_raise : forall e e',
+      step e e' ->
+      step (e_raise e) (e_raise e')
+  | step_raise_raise : forall v,
+      value v ->
+      step (e_raise (e_raise v)) (e_raise v)
+  | step_tryv : forall v e,
+      value v ->
+      step (e_try v e) v
+  | step_try_raise : forall v e,
+      value v ->
+      step (e_try (e_raise v) e) (e_app e v)
+  | step_try : forall e1 e2 e1',
+      step e1 e1' ->
+      step (e_try e1 e2) (e_try e1' e2).
 
 Lemma canonical_form_abs : forall v,
   value v ->
@@ -156,9 +148,8 @@ Fixpoint fv_ee (e:exp) : vars :=
   | e_bvar i => \{}
   | e_abs T t1 => fv_ee t1
   | e_app t1 t2 => (fv_ee t1) \u (fv_ee t2)
-  | e_tru => \{}
-  | e_fls => \{}
-  | e_cond t t1 t2 => (fv_ee t) \u (fv_ee t1) \u (fv_ee t2)
+  | e_raise e => (fv_ee e)
+  | e_try e1 e2 => (fv_ee e1) \u (fv_ee e2)
   end.
 
 Ltac gather_vars :=
@@ -203,26 +194,52 @@ Tactic Notation "apply_empty" "*" constr(F) :=
 Lemma progress : forall e T,
   lc_exp e ->
   typing empty e T ->
-  value e \/ exists e', step e e'.
+  (value e) \/ (exists e', step e e') \/ ((exists e1, e = e_raise e1 /\ value e1)).
 Proof.
   introv LC Typ.
   inductions Typ.
  - apply binds_empty_inv in H0. inverts H0.
  - inverts LC. left*.
- - right. inverts LC. destruct~ IHTyp1.
+ - right. left. inverts LC. destruct~ IHTyp1.
    destruct~ IHTyp2.
    apply canonical_form_abs in Typ1; auto.
    destruct Typ1 as [e Typ1].
    subst. exists* (open_ee e e2).
+   destruct H0.
    destruct H0 as [e' H0]. exists*.
+   destruct H0 as [e1' H0]. destruct H0.
+   subst. exists*.
+   destruct H.
    destruct H as [e' H]. exists*.
- - left*.
- - left*.
- - right. inverts LC. destruct~ IHTyp1.
-   apply cannonical_form_bool in Typ1; auto.
-   destruct Typ1. 
-   subst. exists*. subst. exists*.
-   destruct H as [e' H]. exists*.
+   destruct H as [e1' H]. destruct H.
+   subst. exists*.
+ - (*case typ_error*)
+  (*
+    program gets stuck when exeption occurs
+    i.e e_error is not a value neither do it takes step.
+
+    This is intentional behavior in current system
+
+   Progress refined for exceptions
+  *)
+   right.
+   inverts LC.
+   destruct~ IHTyp.
+   right. exists* e.
+   destruct H.
+   destruct H as [e' H].
+   left. exists*.
+   destruct H as [e1 [H1 H2]].
+   subst.
+   left. exists* (e_raise e1).
+ - right. inverts LC.
+   destruct~ IHTyp1.
+   left. exists*.
+   destruct H.
+   destruct H as [e' H].
+   left. exists*.
+   destruct H as [e1' [H H']].
+   left. subst. exists*.
 Qed.
 
 Lemma typing_weakening : forall E F G e T,
@@ -239,9 +256,8 @@ Proof.
     rewrite~ concat_assoc.
     rewrite~ concat_assoc in H2.
   - apply* typ_app.
-  - apply* typ_tru.
-  - apply* typ_fls.
-  - apply* typ_cond.
+  - apply* typ_raise.
+  - apply* typ_try.
 Qed.
 
 (* ********************************************************************** *)
@@ -314,6 +330,7 @@ Proof.
     forwards*: H1 y.
   - split*.
   - split*.
+  - split*.
 Qed.
 
 Lemma typing_through_subst_ee : forall E F x S e T s,
@@ -341,9 +358,8 @@ Proof.
     apply typing_regular in TypS.
     destruct~ TypS.
   - apply* typ_app.
-  - apply* typ_tru.
-  - apply* typ_fls.
-  - apply* typ_cond.
+  - apply* typ_raise.
+  - apply* typ_try.
 Qed.
 
 Lemma preservation : forall E e T e',
@@ -365,6 +381,18 @@ Proof.
     forwards*: typing_through_subst_ee H.
     rewrite~ (concat_empty_r).
     forwards*: typing_regular Typ2.
+    inverts Typ1.
+    apply* typ_raise.
+    inverts Typ2.
+    apply* typ_raise.
   - inverts* red.
-    apply* typ_cond.
+    forwards*: IHTyp.
+    apply* typ_raise.
+    inverts Typ.
+    apply* typ_raise.
+  - inverts* red.
+    inverts Typ1.
+    apply* typ_app.
+    forwards*: IHTyp1 H2.
+    apply* typ_try.
 Qed.
